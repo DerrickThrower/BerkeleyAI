@@ -82,6 +82,7 @@ export async function runAgent(
   sessionId: string,
   root: string,
   prompt: string,
+  peerContext: string,
   emit: Emit
 ): Promise<void> {
   const runId = nanoid(8);
@@ -106,13 +107,27 @@ export async function runAgent(
   const tree = await readTree(root);
   const fileList = flatten(tree).slice(0, 600);
 
+  // Coordination: if teammates are working in this same codebase right now, the
+  // agent must read what they're doing and react to it BEFORE editing — pick a
+  // lane that complements their work instead of clobbering it.
+  const coordination = peerContext
+    ? "\n\n=== SHARED CODING SESSION — you are NOT alone in this codebase ===\n" +
+      "Other people's agents are working here at the same time:\n" +
+      peerContext +
+      "\n\nBefore you touch any file, your FIRST message must be ONE short sentence stating how " +
+      "your plan accounts for the work above — which files/areas you will OWN and which you will " +
+      "AVOID so you don't overwrite their changes. Then proceed, strictly staying in your lane. " +
+      "If your task genuinely overlaps theirs, build on what they're doing rather than redoing it.\n"
+    : "";
+
   const system =
     "You are a coding agent operating directly on a real codebase on disk. " +
     "Accomplish the user's request by reading and editing files with the provided tools. " +
     "Work across as many files as needed. Make minimal, correct, idiomatic changes that match " +
     "the surrounding code. Read a file before editing it. When fully done, call finish with a " +
-    "concise summary. Do not ask the user questions — make reasonable decisions and proceed.\n\n" +
-    `Project files (relative paths):\n${fileList.join("\n")}`;
+    "concise summary. Do not ask the user questions — make reasonable decisions and proceed." +
+    coordination +
+    `\n\nProject files (relative paths):\n${fileList.join("\n")}`;
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
 

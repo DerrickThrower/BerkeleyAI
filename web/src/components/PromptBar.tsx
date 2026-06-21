@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ModelChoice } from "../types";
 
 interface PromptBarProps {
@@ -7,6 +7,8 @@ interface PromptBarProps {
   onModelChange: (model: ModelChoice) => void;
   onSubmit: (text: string) => void;
   onTyping: (typing: boolean) => void;
+  // Live draft for the shared Intent Map — fires (debounced) as you type.
+  onDraft: (text: string) => void;
 }
 
 const MODELS: { value: ModelChoice; label: string }[] = [
@@ -21,14 +23,27 @@ export function PromptBar({
   onModelChange,
   onSubmit,
   onTyping,
+  onDraft,
 }: PromptBarProps) {
   const [text, setText] = useState("");
+  const draftTimer = useRef<number | null>(null);
+
+  // Debounce draft broadcasts so we classify on a pause, not every keystroke.
+  const emitDraft = (value: string) => {
+    if (draftTimer.current != null) window.clearTimeout(draftTimer.current);
+    draftTimer.current = window.setTimeout(() => onDraft(value), 220);
+  };
+  useEffect(() => () => {
+    if (draftTimer.current != null) window.clearTimeout(draftTimer.current);
+  }, []);
 
   const send = () => {
     const t = text.trim();
     if (!t || disabled) return;
     onSubmit(t);
     setText("");
+    if (draftTimer.current != null) window.clearTimeout(draftTimer.current);
+    onDraft(""); // clear our composing chip immediately
   };
 
   return (
@@ -42,6 +57,7 @@ export function PromptBar({
         onChange={(e) => {
           setText(e.target.value);
           onTyping(e.target.value.length > 0);
+          emitDraft(e.target.value);
         }}
         onFocus={() => onTyping(text.length > 0)}
         onBlur={() => onTyping(false)}

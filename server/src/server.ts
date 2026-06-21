@@ -26,6 +26,7 @@ import {
 import { initTracing } from "./tracing.js";
 import { Intake } from "./intake.js";
 import { resolveConflict } from "./arbiter.js";
+import { classifyTarget } from "./classify.js";
 import { ensureSeed } from "./seed.js";
 import {
   listSessions,
@@ -39,7 +40,7 @@ import { execute } from "./adapters/index.js";
 import { workingDiff, gitInfo, createBranch, checkoutBranch, commitAll, push, ship } from "./git.js";
 import { run as runCmd, cancelRun, getDevServer, peekDevServer } from "./runner.js";
 import { runAgent, cancelAgent } from "./agent.js";
-import type { ClientMsg, ServerMsg, User, Presence, WorkspaceMsg } from "./types.js";
+import type { ClientMsg, ServerMsg, User, Presence, WorkspaceMsg, IntentItem, ActiveRunView } from "./types.js";
 
 interface Conn {
   ws: WebSocket;
@@ -51,6 +52,47 @@ interface Conn {
 const PALETTE = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c"];
 const rooms = new Map<string, Set<Conn>>();
 const subscribed = new Set<string>();
+
+// Live shared-intent state: per room, the current draft each user is composing,
+// already classified to a target. Ephemeral (in-memory) like presence — this is
+// the data behind the Intent Map.
+const drafts = new Map<string, Map<string, IntentItem>>();
+
+function broadcastIntents(room: string): void {
+  const m = drafts.get(room);
+  broadcast(room, { type: "intents", intents: m ? [...m.values()] : [] });
+}
+
+function clearDraft(room: string, userId: string): void {
+  drafts.get(room)?.delete(userId);
+}
+
+// Agent runs currently in flight per room. This is the shared "what is everyone
+// building" state — and the context a newly-launched agent reads so it can
+// coordinate around its peers before it starts editing.
+const activeRuns = new Map<string, Map<string, ActiveRunView>>();
+
+function broadcastRuns(room: string): void {
+  const m = activeRuns.get(room);
+  broadcast(room, { type: "runs", runs: m ? [...m.values()] : [] });
+}
+
+// Build the peer-awareness brief injected into a new agent's context: who else
+// is working here right now, on what, and (if known) their plan.
+function buildPeerContext(room: string, selfId: string): string {
+  const runs = [...(activeRuns.get(room)?.values() ?? [])].filter((r) => r.userId !== selfId);
+  const composing = [...(drafts.get(room)?.values() ?? [])].filter((d) => d.userId !== selfId);
+  const lines: string[] = [];
+  for (const r of runs) {
+    const touched = r.files.length ? ` (currently editing: ${r.files.join(", ")})` : "";
+    const plan = r.plan ? ` — their stated plan: "${r.plan}"` : "";
+    lines.push(`- ${r.userName}'s agent is ALREADY WORKING on: "${r.prompt}"${touched}${plan}`);
+  }
+  for (const d of composing) {
+    lines.push(`- ${d.userName} is about to prompt: "${d.text}"`);
+  }
+  return lines.join("\n");
+}
 
 function broadcast(room: string, msg: ServerMsg | WorkspaceMsg): void {
   const conns = rooms.get(room);
@@ -102,7 +144,7 @@ async function handleMessage(conn: Conn, raw: string): Promise<void> {
       await ensureSubscribed(room);
       conn.roomId = room;
       conn.user = {
-        id: nanoid(8),
+        id: msg.user.id || nanoid(8), // stable per-tab id → reconnects reuse the slot, no presence ghosts
         name: msg.user.name || "anon",
         color: msg.user.color || pickColor(room),
         model: msg.user.model || "claude",
@@ -150,6 +192,44 @@ async function handleMessage(conn: Conn, raw: string): Promise<void> {
       break;
     }
 
+    case "draft": {
+      if (!conn.roomId) break;
+      conn.alive = true;
+      const room = conn.roomId;
+      const text = msg.text.trim();
+      if (!drafts.has(room)) drafts.set(room, new Map());
+      if (!text) {
+        clearDraft(room, conn.user.id);
+      } else {
+        // For the seeded demo room (files in Redis), classify to a target so the
+        // Intent Map can light up file/symbol. For a real on-disk session the
+        // files aren't in Redis and prompts are natural-language, so we skip
+        // classification — the shared context is driven by the draft text itself
+        // plus the agent's real file activity once it runs.
+        const session = await getSession(room);
+        let file = "";
+        let symbol: string | null = null;
+        if (!session) {
+          const files = await getFiles(room);
+          const c = await classifyTarget(conn.user.id, text, files);
+          file = c.file;
+          symbol = c.symbol;
+        }
+        drafts.get(room)!.set(conn.user.id, {
+          userId: conn.user.id,
+          userName: conn.user.name,
+          userColor: conn.user.color,
+          text,
+          file,
+          symbol,
+          stage: "composing",
+          ts: Date.now(),
+        });
+      }
+      broadcastIntents(room);
+      break;
+    }
+
     case "set_model": {
       if (!conn.roomId) break;
       conn.user.model = msg.model;
@@ -169,6 +249,10 @@ async function handleMessage(conn: Conn, raw: string): Promise<void> {
 
     case "submit_prompt": {
       if (!conn.roomId) break;
+      // The draft is now a real prompt — drop it from the composing view; the
+      // arbitration overlay takes over from here.
+      clearDraft(conn.roomId, conn.user.id);
+      broadcastIntents(conn.roomId);
       await intake.submit({
         id: nanoid(10),
         roomId: conn.roomId,
@@ -237,10 +321,51 @@ async function handleMessage(conn: Conn, raw: string): Promise<void> {
       if (!conn.roomId) break;
       const session = await getSession(conn.roomId);
       if (!session) break;
-      // fire-and-stream; events fan out to everyone in the session
-      void runAgent(conn.roomId, session.root, msg.prompt, (event) =>
-        broadcast(conn.roomId, { type: "agent_event", event })
-      );
+      const room = conn.roomId;
+      const { id: userId, name: userName, color: userColor } = conn.user;
+
+      // 1) Read peer context BEFORE starting — this is the coordination step.
+      const peerContext = buildPeerContext(room, userId);
+
+      // 2) Register this run so peers (and any later agent) can see it.
+      if (!activeRuns.has(room)) activeRuns.set(room, new Map());
+      activeRuns.get(room)!.set(userId, {
+        userId, userName, userColor,
+        prompt: msg.prompt,
+        files: [],
+        plan: null,
+        startedAt: Date.now(),
+      });
+      clearDraft(room, userId); // the draft became a real run
+      broadcastIntents(room);
+      broadcastRuns(room);
+
+      // 3) Run the agent with peer awareness; stream + track activity to the room.
+      void runAgent(room, session.root, msg.prompt, peerContext, (event) => {
+        const run = activeRuns.get(room)?.get(userId);
+        if (run) {
+          // the agent's first prose is its coordination plan ("report back")
+          if (event.phase === "message" && event.text && !run.plan) {
+            run.plan = event.text.trim().slice(0, 240);
+            broadcastRuns(room);
+          }
+          // track which files this agent actually touches
+          if (
+            event.phase === "tool_result" &&
+            event.path &&
+            (event.tool === "edit_file" || event.tool === "write_file") &&
+            !run.files.includes(event.path)
+          ) {
+            run.files.push(event.path);
+            broadcastRuns(room);
+          }
+          if (event.phase === "done" || event.phase === "error") {
+            activeRuns.get(room)?.delete(userId);
+            broadcastRuns(room);
+          }
+        }
+        broadcast(room, { type: "agent_event", event: { ...event, userId, userName, userColor } });
+      });
       break;
     }
 
@@ -416,6 +541,10 @@ async function main() {
         rooms.get(conn.roomId)?.delete(conn);
         await removeUser(conn.roomId, conn.user.id);
         await clearPresence(conn.roomId, conn.user.id); // publishes → fans out
+        clearDraft(conn.roomId, conn.user.id);
+        broadcastIntents(conn.roomId);
+        activeRuns.get(conn.roomId)?.delete(conn.user.id);
+        broadcastRuns(conn.roomId);
       }
     });
     ws.on("error", () => {});

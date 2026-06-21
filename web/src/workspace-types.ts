@@ -98,6 +98,9 @@ export interface AgentEvent {
   iteration?: number;
   summary?: string;
   filesChanged?: string[];
+  userId?: string;
+  userName?: string;
+  userColor?: string;
 }
 
 // ---- Workspace WebSocket server messages (sent over the same WS) ----

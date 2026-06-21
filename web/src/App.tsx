@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWs } from "./ws";
 import type {
   ArbCase,
+  IntentItem,
   ModelChoice,
   Presence,
   PresenceState,
@@ -16,6 +17,7 @@ import { CodeEditor } from "./components/CodeEditor";
 import { StatusStrip } from "./components/StatusStrip";
 import { PromptBar } from "./components/PromptBar";
 import { MergeOverlay } from "./components/MergeOverlay";
+import { IntentMap } from "./components/IntentMap";
 
 const PALETTE = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c"];
 
@@ -53,6 +55,7 @@ export default function App() {
   const [files, setFiles] = useState<Record<string, string>>({});
   const [users, setUsers] = useState<User[]>([]);
   const [presence, setPresence] = useState<Presence[]>([]);
+  const [intents, setIntents] = useState<IntentItem[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
 
   // Arbitration / status
@@ -90,6 +93,9 @@ export default function App() {
       }
       case "presence":
         setPresence(msg.presence);
+        break;
+      case "intents":
+        setIntents(msg.intents);
         break;
       case "prompt_queued":
         setQueueDepth(msg.queueDepth);
@@ -206,6 +212,11 @@ export default function App() {
     sendPresence(typing ? "typing" : "viewing", activeFile);
   };
 
+  const handleDraft = useCallback(
+    (text: string) => send({ type: "draft", text }),
+    [send]
+  );
+
   if (!joined) {
     return (
       <JoinScreen
@@ -249,6 +260,8 @@ export default function App() {
         )}
       </div>
 
+      <IntentMap intents={intents} files={files} selfId={selfId} />
+
       <StatusStrip
         queueDepth={queueDepth}
         arbitrating={arbitrating}
@@ -261,6 +274,7 @@ export default function App() {
         onModelChange={handleModelChange}
         onSubmit={handleSubmitPrompt}
         onTyping={handleTyping}
+        onDraft={handleDraft}
       />
 
       {resolution && (

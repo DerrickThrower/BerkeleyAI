@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWs } from "./ws";
-import type { ServerMsg } from "./types";
+import type { ServerMsg, Presence, IntentItem, ActiveRunView } from "./types";
 import { api, ApiError } from "./api";
 import type {
   Session,
@@ -18,17 +18,37 @@ import { PreviewPane } from "./components/PreviewPane";
 import { Terminal, type TermLine } from "./components/Terminal";
 import { ShipPanel } from "./components/ShipPanel";
 import { AgentPanel } from "./components/AgentPanel";
+import { TeamContext } from "./components/TeamContext";
 
 const PALETTE = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c"];
 const SAVE_DEBOUNCE = 800;
 
-type RightTab = "agent" | "preview" | "diff" | "tests";
+type RightTab = "preview" | "diff" | "tests";
 
 function userName(): string {
   try {
+    const urlName = new URLSearchParams(window.location.search).get("name");
+    if (urlName) {
+      localStorage.setItem("vibedocs.name", urlName);
+      return urlName;
+    }
     return localStorage.getItem("vibedocs.name") || "you";
   } catch {
     return "you";
+  }
+}
+// Stable id PER TAB (sessionStorage): reconnects reuse the same presence slot
+// instead of piling up ghosts, while two tabs are still distinct people.
+function clientId(): string {
+  try {
+    let id = sessionStorage.getItem("vibedocs.cid");
+    if (!id) {
+      id = Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem("vibedocs.cid", id);
+    }
+    return id;
+  } catch {
+    return Math.random().toString(36).slice(2, 10);
   }
 }
 function userColor(name: string): string {
@@ -61,18 +81,23 @@ export function Workspace({ sessionId }: WorkspaceProps) {
   const [dev, setDev] = useState<DevStatus>({ state: "stopped", url: null, pid: null });
   const [devLog, setDevLog] = useState("");
 
-  const [tab, setTab] = useState<RightTab>("agent");
+  const [tab, setTab] = useState<RightTab>("diff");
   const [showShip, setShowShip] = useState(false);
+  const [filesCollapsed, setFilesCollapsed] = useState(false);
 
   // Agent (Cursor-style multi-file)
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [agentRunning, setAgentRunning] = useState(false);
 
-  // AI edit
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiModel, setAiModel] = useState<ModelChoice>("claude");
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
+  // Shared session context (who else is here, what they're prompting/building)
+  const [presence, setPresence] = useState<Presence[]>([]);
+  const [intents, setIntents] = useState<IntentItem[]>([]);
+  const [runs, setRuns] = useState<ActiveRunView[]>([]);
+  const [selfId, setSelfId] = useState<string | null>(null);
+
+  // The agent always runs on Claude. (The single-file "AI edit" bar was removed
+  // in favor of the agent as the one prompting surface.)
+  const [aiModel] = useState<ModelChoice>("claude");
 
   // Terminal (one-shot runs + tests)
   const [termLines, setTermLines] = useState<TermLine[]>([]);
@@ -81,6 +106,7 @@ export function Workspace({ sessionId }: WorkspaceProps) {
 
   const name = useMemo(userName, []);
   const color = useMemo(() => userColor(name), [name]);
+  const cid = useMemo(clientId, []);
 
   // ---- data loaders ----
   const loadDiff = useCallback(async () => {
@@ -192,6 +218,7 @@ export function Workspace({ sessionId }: WorkspaceProps) {
   );
 
   // Mirror latest values/loaders so the stable WS handler reads fresh state.
+  const selfIdRef = useRef<string | null>(null);
   const onAgentDoneRef = useRef<(ev: AgentEvent) => void>(() => {});
   onAgentDoneRef.current = (ev: AgentEvent) => {
     void loadTree();
@@ -205,6 +232,22 @@ export function Workspace({ sessionId }: WorkspaceProps) {
   // ---- websocket ----
   const handleMessage = useCallback((msg: ServerMsg) => {
     switch (msg.type) {
+      case "room_state":
+        if (msg.you?.id) {
+          selfIdRef.current = msg.you.id;
+          setSelfId(msg.you.id);
+        }
+        setPresence(msg.presence);
+        break;
+      case "presence":
+        setPresence(msg.presence);
+        break;
+      case "intents":
+        setIntents(msg.intents);
+        break;
+      case "runs":
+        setRuns(msg.runs);
+        break;
       case "run_event": {
         const ev = msg.event;
         if (ev.runId === "dev") {
@@ -222,13 +265,15 @@ export function Workspace({ sessionId }: WorkspaceProps) {
       }
       case "agent_event": {
         const ev = msg.event;
-        setAgentEvents((prev) => [...prev, ev]);
-        if (ev.phase === "done" || ev.phase === "error") {
-          setAgentRunning(false);
+        // My own run streams into the agent log; teammates' runs surface in the
+        // Team Context bar (and via the active-runs broadcast) instead.
+        const mine = !ev.userId || ev.userId === selfIdRef.current;
+        if (mine) {
+          setAgentEvents((prev) => [...prev, ev]);
+          if (ev.phase === "done" || ev.phase === "error") setAgentRunning(false);
         }
-        if (ev.phase === "done") {
-          onAgentDoneRef.current(ev);
-        }
+        // Any run finishing changed files on disk in this shared repo → refresh.
+        if (ev.phase === "done") onAgentDoneRef.current(ev);
         break;
       }
       case "dev_status":
@@ -243,7 +288,7 @@ export function Workspace({ sessionId }: WorkspaceProps) {
     enabled: !!session,
     onMessage: handleMessage,
     onOpen: () => {
-      send({ type: "join", roomId: sessionId, user: { name, color, model: aiModel } });
+      send({ type: "join", roomId: sessionId, user: { id: cid, name, color, model: aiModel } });
       // refresh dev status on (re)connect
       api
         .dev(sessionId)
@@ -252,41 +297,21 @@ export function Workspace({ sessionId }: WorkspaceProps) {
     },
   });
 
-  // ---- AI edit ----
-  const runAiEdit = async () => {
-    if (!activePath || !aiPrompt.trim()) return;
-    setAiBusy(true);
-    setAiError(null);
-    try {
-      const r = await api.aiEdit(sessionId, activePath, aiPrompt.trim(), aiModel);
-      if (r.ok) {
-        setFileContent(r.after);
-        setAiPrompt("");
-        setSaveState("saved");
-        void loadDiff();
-        void loadGit();
-        setTab("diff");
-      } else {
-        setAiError(r.error || "AI edit failed.");
-      }
-    } catch (e) {
-      setAiError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setAiBusy(false);
-    }
-  };
-
   // ---- agent (Cursor-style multi-file) ----
   const runAgent = (prompt: string) => {
+    setActivePath(null); // keep the chat in view
     setAgentEvents([]);
     setAgentRunning(true);
-    setTab("agent");
     send({ type: "agent", prompt, model: aiModel });
   };
   const stopAgent = () => {
     send({ type: "agent_cancel" });
     setAgentRunning(false);
   };
+  const handleDraft = useCallback(
+    (text: string) => send({ type: "draft", text }),
+    [send]
+  );
 
   // ---- run / tests ----
   const runCommand = (cmd: string, label: string) => {
@@ -342,94 +367,111 @@ export function Workspace({ sessionId }: WorkspaceProps) {
         </button>
       </header>
 
-      <div className="ws-main">
-        {/* LEFT: file tree */}
-        <aside className="ws-left">
-          <div className="ws-left-head">
-            <span>Files</span>
-            <button className="ws-btn-sm" onClick={() => void loadTree()}>
-              ↻
+      <TeamContext
+        presence={presence}
+        intents={intents}
+        runs={runs}
+        selfId={selfId}
+      />
+
+      <div className={"ws-main" + (filesCollapsed ? " files-collapsed" : "")}>
+        {/* LEFT: file tree (collapsible) */}
+        {filesCollapsed ? (
+          <aside className="ws-left ws-left-collapsed">
+            <button
+              className="ws-btn-sm ws-left-expand"
+              title="Show files"
+              onClick={() => setFilesCollapsed(false)}
+            >
+              ▸
             </button>
-          </div>
-          {treeError ? (
-            <div className="ws-error">{treeError}</div>
-          ) : !tree ? (
-            <div className="ws-dim ws-pad">loading tree…</div>
+          </aside>
+        ) : (
+          <aside className="ws-left">
+            <div className="ws-left-head">
+              <span>Files</span>
+              <div className="ws-left-head-actions">
+                <button className="ws-btn-sm" title="Refresh" onClick={() => void loadTree()}>
+                  ↻
+                </button>
+                <button
+                  className="ws-btn-sm"
+                  title="Collapse files"
+                  onClick={() => setFilesCollapsed(true)}
+                >
+                  ⟨
+                </button>
+              </div>
+            </div>
+            {treeError ? (
+              <div className="ws-error">{treeError}</div>
+            ) : !tree ? (
+              <div className="ws-dim ws-pad">loading tree…</div>
+            ) : (
+              <FileTree
+                root={tree}
+                activePath={activePath}
+                modifiedPaths={modifiedPaths}
+                onSelect={openFile}
+              />
+            )}
+          </aside>
+        )}
+
+        {/* CENTER: the agent chat (Claude Code style); a file opens over it */}
+        <section className="ws-center">
+          {activePath ? (
+            <>
+              <div className="ws-editor-head">
+                <button
+                  className="ws-btn-sm ws-back-chat"
+                  title="Back to chat"
+                  onClick={() => setActivePath(null)}
+                >
+                  ← Chat
+                </button>
+                <span className="ws-mono ws-editor-path">{activePath}</span>
+                <span className={`ws-save ws-save-${saveState}`}>
+                  {saveState === "saving"
+                    ? "saving…"
+                    : saveState === "saved"
+                    ? "saved"
+                    : saveState === "error"
+                    ? "save failed"
+                    : ""}
+                </span>
+              </div>
+              <div className="ws-editor-region">
+                {fileError ? (
+                  <div className="ws-error ws-pad">{fileError}</div>
+                ) : (
+                  <WorkspaceEditor
+                    value={fileContent}
+                    path={activePath}
+                    onChange={onEditorChange}
+                  />
+                )}
+              </div>
+            </>
           ) : (
-            <FileTree
-              root={tree}
-              activePath={activePath}
-              modifiedPaths={modifiedPaths}
-              onSelect={openFile}
+            <AgentPanel
+              events={agentEvents}
+              running={agentRunning}
+              onRun={runAgent}
+              onStop={stopAgent}
+              onDraft={handleDraft}
+              onViewDiff={() => {
+                setTab("diff");
+                void loadDiff();
+              }}
             />
           )}
-        </aside>
-
-        {/* CENTER: editor + AI bar */}
-        <section className="ws-center">
-          <div className="ws-editor-head">
-            <span className="ws-mono ws-editor-path">
-              {activePath ?? "no file open"}
-            </span>
-            <span className={`ws-save ws-save-${saveState}`}>
-              {saveState === "saving"
-                ? "saving…"
-                : saveState === "saved"
-                ? "saved"
-                : saveState === "error"
-                ? "save failed"
-                : ""}
-            </span>
-          </div>
-          <div className="ws-editor-region">
-            {fileError ? (
-              <div className="ws-error ws-pad">{fileError}</div>
-            ) : activePath ? (
-              <WorkspaceEditor
-                value={fileContent}
-                path={activePath}
-                onChange={onEditorChange}
-              />
-            ) : (
-              <div className="editor-empty">Select a file to edit.</div>
-            )}
-          </div>
-          <div className="ws-ai-bar">
-            <textarea
-              className="prompt-input"
-              placeholder={
-                activePath
-                  ? `Ask the model to edit ${activePath}…`
-                  : "Open a file to use AI edit"
-              }
-              value={aiPrompt}
-              disabled={!activePath || aiBusy}
-              onChange={(e) => setAiPrompt(e.target.value)}
-            />
-            <select
-              className="prompt-model"
-              value={aiModel}
-              onChange={(e) => setAiModel(e.target.value as ModelChoice)}
-            >
-              <option value="claude">Claude</option>
-              <option value="gpt">GPT</option>
-              <option value="mock">Mock</option>
-            </select>
-            <button
-              className="btn-primary"
-              onClick={runAiEdit}
-              disabled={!activePath || !aiPrompt.trim() || aiBusy}
-            >
-              {aiBusy ? "Editing…" : "Edit with AI"}
-            </button>
-          </div>
-          {aiError && <div className="ws-error ws-pad">{aiError}</div>}
         </section>
 
         {/* RIGHT: tabbed pane */}
         <section className="ws-right">
           <div className="ws-tabbar">
-            {(["agent", "preview", "diff", "tests"] as RightTab[]).map((t) => (
+            {(["preview", "diff", "tests"] as RightTab[]).map((t) => (
               <button
                 key={t}
                 className={`ws-tab${tab === t ? " ws-tab-active" : ""}`}
@@ -438,29 +480,11 @@ export function Workspace({ sessionId }: WorkspaceProps) {
                   if (t === "diff") void loadDiff();
                 }}
               >
-                {t === "agent"
-                  ? "Agent"
-                  : t === "preview"
-                  ? "Preview"
-                  : t === "diff"
-                  ? "Diff"
-                  : "Tests"}
+                {t === "preview" ? "Preview" : t === "diff" ? "Diff" : "Tests"}
               </button>
             ))}
           </div>
           <div className="ws-pane">
-            {tab === "agent" && (
-              <AgentPanel
-                events={agentEvents}
-                running={agentRunning}
-                onRun={runAgent}
-                onStop={stopAgent}
-                onViewDiff={() => {
-                  setTab("diff");
-                  void loadDiff();
-                }}
-              />
-            )}
             {tab === "preview" && (
               <PreviewPane
                 status={dev}

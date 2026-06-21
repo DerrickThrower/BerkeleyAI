@@ -5,6 +5,9 @@ export interface Presence { userId: string; name: string; color: string; state: 
 export interface PromptRequest { id: string; roomId: string; userId: string; userName: string; userColor: string; model: ModelChoice; text: string; ts: number; }
 export type ArbCase = 1 | 2 | 3;
 export interface TargetClassification { promptId: string; file: string; symbol: string | null; rationale: string; }
+export type IntentStage = "composing";
+export interface IntentItem { userId: string; userName: string; userColor: string; text: string; file: string; symbol: string | null; stage: IntentStage; ts: number; }
+export interface ActiveRunView { userId: string; userName: string; userColor: string; prompt: string; files: string[]; plan: string | null; startedAt: number; }
 export type ResolutionType = "case1_parallel" | "case2_merged" | "case3_sequenced" | "case3_conflict";
 export interface Proposal { promptId: string; userName: string; userColor: string; model: ModelChoice; file: string; before: string; after: string; summary: string; }
 export interface ConflictView { file: string; symbol: string | null; asks: { promptId: string; userName: string; userColor: string; text: string }[]; }
@@ -16,6 +19,8 @@ import type { RunEvent, DevStatus, AgentEvent } from "./workspace-types";
 export type ServerMsg =
   | { type: "room_state"; roomId: string; you: User; files: Record<string, string>; users: User[]; presence: Presence[] }
   | { type: "presence"; presence: Presence[] }
+  | { type: "intents"; intents: IntentItem[] }
+  | { type: "runs"; runs: ActiveRunView[] }
   | { type: "prompt_queued"; prompt: PromptRequest; queueDepth: number }
   | { type: "arbitrating"; promptIds: string[]; arbCase: ArbCase; classifications: TargetClassification[] }
   | { type: "resolution"; resolution: Resolution }
@@ -26,8 +31,9 @@ export type ServerMsg =
   | { type: "error"; message: string };
 
 export type ClientMsg =
-  | { type: "join"; roomId: string; user: { name: string; color: string; model: ModelChoice } }
+  | { type: "join"; roomId: string; user: { id?: string; name: string; color: string; model: ModelChoice } }
   | { type: "presence"; state: PresenceState; file: string | null; cursor?: { line: number; ch: number } }
+  | { type: "draft"; text: string }
   | { type: "set_model"; model: ModelChoice }
   | { type: "submit_prompt"; text: string; model: ModelChoice; file?: string }
   | { type: "resolve_conflict"; resolutionId: string; strategy: "sequence" | "keep_a" | "keep_b" }

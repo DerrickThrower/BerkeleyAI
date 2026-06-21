@@ -916,7 +916,7 @@ body {
 .dash-confirm { display: inline-flex; gap: 6px; }
 
 /* ---- Workspace shell ---- */
-.ws { height: 100%; display: grid; grid-template-rows: auto 1fr; background: var(--bg); }
+.ws { height: 100%; display: grid; grid-template-rows: auto auto 1fr; min-height: 0; background: var(--bg); }
 .ws-loading, .ws-fatal {
   height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 14px; color: var(--text-dim);
@@ -1288,3 +1288,361 @@ body {
   0%, 60%, 100% { opacity: 0.25; }
   30% { opacity: 1; }
 }
+
+/* ============================================================================
+   SHARED INTENT MAP — the live, room-wide view of who's about to touch what.
+   ============================================================================ */
+.intent-map {
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg-raised), var(--bg));
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 38vh;
+  overflow-y: auto;
+}
+.intent-map.has-conflict {
+  box-shadow: inset 0 1px 0 0 var(--amber);
+}
+.intent-map-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.intent-map-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.intent-map-sub {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.intent-collision {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #fde68a;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  padding: 6px 10px;
+  animation: intent-pulse 1.4s ease-in-out infinite;
+}
+.intent-collision .bolt { font-size: 14px; }
+.intent-collision code {
+  font-family: var(--mono);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+@keyframes intent-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
+}
+
+.intent-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.intent-file {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: var(--bg);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.intent-file.active { border-color: var(--border); }
+.intent-file.compatible {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25);
+}
+.intent-file.conflict {
+  border-color: var(--del);
+  box-shadow: 0 0 12px -2px var(--del);
+}
+.intent-file-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.intent-file.active .intent-file-name { color: var(--text); }
+.intent-file-name .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-faint);
+}
+.intent-file.active .intent-file-name .dot { background: var(--accent); }
+.tag {
+  margin-left: auto;
+  font-family: var(--sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.tag.amber { color: #fde68a; background: var(--amber-bg); border: 1px solid var(--amber); }
+.tag.red   { color: #fecaca; background: var(--del-bg);   border: 1px solid var(--del); }
+.tag.idle  { color: var(--text-faint); border: 1px solid var(--border-soft); }
+
+.intent-sym {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 2px 16px;
+}
+.intent-sym .sym-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.intent-sym.conflict .sym-name { color: #fecaca; font-weight: 600; }
+.sym-chips { display: flex; gap: 4px; }
+
+.intent-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0d1117;
+  border: 2px solid var(--bg);
+}
+.intent-chip.me { outline: 2px solid var(--text); outline-offset: -2px; }
+
+.intent-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-soft);
+}
+.intent-draft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  background: var(--bg-chip);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 3px 10px 3px 6px;
+}
+.intent-dot { width: 8px; height: 8px; border-radius: 50%; }
+.intent-who { color: var(--text); font-weight: 600; }
+.intent-text { color: var(--text-dim); font-style: italic; }
+
+.intent-empty {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  padding: 4px 2px;
+}
+
+/* ============================================================================
+   TEAM CONTEXT — shared-session awareness bar (real workspace).
+   ============================================================================ */
+.team-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+.team-ctx.team-ctx-live { box-shadow: inset 0 -1px 0 0 var(--accent); }
+.team-ctx-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.team-ctx-title { font-weight: 700; color: var(--text); }
+.team-ctx-sub { font-size: 12px; color: var(--text-faint); }
+.team-ctx-empty, .team-ctx-idle { font-size: 12.5px; color: var(--text-faint); }
+
+.team-ctx-cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.team-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 220px;
+  max-width: 340px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 9px;
+  background: var(--bg);
+}
+.team-card.building { box-shadow: 0 0 0 1px var(--accent); }
+.team-card.composing { opacity: 0.92; }
+.team-card-who { display: flex; align-items: center; gap: 8px; }
+.team-chip {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #0d1117;
+  flex: 0 0 auto;
+}
+.team-name { font-weight: 600; color: var(--text); }
+.team-state {
+  margin-left: auto;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim);
+  background: var(--bg-chip);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.team-prompt {
+  font-size: 12.5px; color: var(--text-dim); font-style: italic;
+  line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.team-prompt.draft { color: var(--text-faint); }
+.team-plan {
+  font-size: 12px; color: #a7d3ff;
+  background: rgba(88, 166, 255, 0.08);
+  border-left: 2px solid var(--accent);
+  padding: 3px 8px; border-radius: 0 6px 6px 0;
+  line-height: 1.35;
+}
+.team-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.team-file {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--add);
+  background: var(--add-bg);
+  border-radius: 5px; padding: 1px 6px;
+}
+.team-viewing { font-size: 12px; color: var(--text-faint); }
+
+/* Collapsible Files sidebar */
+.ws-main.files-collapsed { grid-template-columns: 36px 1fr 34%; }
+.ws-left-collapsed { align-items: center; padding-top: 8px; }
+.ws-left-expand {
+  writing-mode: vertical-rl;
+  padding: 8px 4px;
+  color: var(--text-dim);
+}
+.ws-left-head-actions { display: flex; gap: 4px; }
+
+/* Center agent hero (primary prompt surface when no file is open) */
+.ws-agent-hero {
+  height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; text-align: center;
+}
+.ws-agent-hero-eyebrow {
+  font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ws-agent-hero-title { font-size: 22px; color: var(--text); margin: 0; }
+.ws-agent-hero-sub {
+  font-size: 13px; color: var(--text-dim); max-width: 460px; line-height: 1.5; margin: 0;
+}
+.ws-agent-hero-input {
+  width: 100%; max-width: 560px; min-height: 84px; resize: vertical;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text);
+  font-family: var(--sans); font-size: 14px; padding: 12px 14px;
+}
+.ws-agent-hero-input:focus { outline: none; border-color: var(--accent); }
+.ws-agent-hero-run { min-width: 130px; }
+
+/* ============================================================================
+   AGENT CHAT — Claude Code style: transcript above, composer pinned bottom.
+   ============================================================================ */
+.cc { height: 100%; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+.cc-log {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.cc-empty { color: var(--text-dim); max-width: 520px; margin: auto; text-align: center; }
+.cc-empty-title { font-size: 18px; color: var(--text); margin-bottom: 8px; }
+.cc-empty p { font-size: 13px; line-height: 1.6; margin: 0; }
+
+/* user prompt — like a command line */
+.cc-turn.cc-user {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 10px 12px; margin-top: 6px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.cc-prompt-mark { color: var(--accent); font-family: var(--mono); font-weight: 700; }
+.cc-user-text { color: var(--text); font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
+
+/* assistant prose */
+.cc-assistant {
+  color: var(--text); font-size: 13.5px; line-height: 1.6;
+  white-space: pre-wrap; padding: 0 2px;
+}
+
+/* tool calls — compact bullet lines */
+.cc-tool {
+  display: flex; align-items: baseline; gap: 8px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--text-dim);
+  padding-left: 2px;
+}
+.cc-tool-bullet { color: var(--text-faint); font-size: 9px; }
+.cc-tool.ok .cc-tool-bullet { color: var(--add); }
+.cc-tool-label { color: var(--text-dim); }
+.cc-tool-path { color: var(--accent); background: none; padding: 0; }
+.cc-tool-err { font-family: var(--mono); font-size: 12px; color: var(--del); padding-left: 18px; }
+
+/* done summary */
+.cc-done {
+  border-left: 2px solid var(--add); background: var(--add-bg);
+  border-radius: 0 8px 8px 0; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.cc-done-text { color: var(--text); font-size: 13px; line-height: 1.5; }
+.cc-done-files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cc-file-chip {
+  font-family: var(--mono); font-size: 11px; color: var(--add);
+  background: rgba(63,185,80,0.1); border-radius: 5px; padding: 2px 7px;
+}
+.cc-viewdiff {
+  margin-left: auto; background: none; border: none; color: var(--accent);
+  font-size: 12px; cursor: pointer; padding: 0;
+}
+.cc-error { color: var(--del); font-size: 13px; font-family: var(--mono); }
+
+.cc-running { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+.cc-spinner {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: cc-spin 0.7s linear infinite;
+}
+@keyframes cc-spin { to { transform: rotate(360deg); } }
+
+/* composer pinned to the bottom */
+.cc-composer {
+  display: flex; gap: 10px; align-items: flex-end;
+  padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg-raised);
+}
+.cc-input {
+  flex: 1; min-height: 46px; max-height: 200px; resize: none;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-family: var(--sans); font-size: 14px; padding: 12px 14px; line-height: 1.4;
+}
+.cc-input:focus { outline: none; border-color: var(--accent); }
+.cc-send {
+  background: var(--accent); color: #06121f; border: none; border-radius: 9px;
+  padding: 11px 18px; font-weight: 600; font-size: 13.5px; cursor: pointer; flex: none;
+}
+.cc-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.cc-send.cc-stop { background: var(--del); color: #fff; }
+.ws-back-chat { margin-right: 8px; }

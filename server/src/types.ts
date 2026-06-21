@@ -47,6 +47,39 @@ export interface TargetClassification {
   rationale: string;
 }
 
+// ============================================================================
+// SHARED INTENT — the live, room-wide view of what everyone is *about to ask*.
+// As a user composes a prompt, we classify the draft (instantly, heuristically)
+// and broadcast where it will land. Two intents on the same symbol = a collision
+// you can see forming BEFORE anyone hits send. This is the "don't step on each
+// other's shoes" surface, made visual.
+// ============================================================================
+export type IntentStage = "composing"; // (room for "queued"/"executing" later)
+
+export interface IntentItem {
+  userId: string;
+  userName: string;
+  userColor: string;
+  text: string; // the live draft text
+  file: string; // classified target file ("" when unclassified, e.g. on-disk sessions)
+  symbol: string | null; // classified target symbol (null = whole file)
+  stage: IntentStage;
+  ts: number;
+}
+
+// An agent run currently in flight in a session. Broadcast to the whole room so
+// every teammate sees what others are building — and so a newly-launched agent
+// can read its peers' work and coordinate around it BEFORE it starts editing.
+export interface ActiveRunView {
+  userId: string;
+  userName: string;
+  userColor: string;
+  prompt: string; // what they asked the agent to do
+  files: string[]; // files this agent has touched so far
+  plan: string | null; // the agent's reported coordination plan (its first message)
+  startedAt: number;
+}
+
 export interface ExecResult {
   promptId: string;
   file: string;
@@ -104,6 +137,8 @@ export interface Resolution {
 export type ServerMsg =
   | { type: "room_state"; roomId: string; you: User; files: Record<string, string>; users: User[]; presence: Presence[] }
   | { type: "presence"; presence: Presence[] }
+  | { type: "intents"; intents: IntentItem[] }
+  | { type: "runs"; runs: ActiveRunView[] }
   | { type: "prompt_queued"; prompt: PromptRequest; queueDepth: number }
   | { type: "arbitrating"; promptIds: string[]; arbCase: ArbCase; classifications: TargetClassification[] }
   | { type: "resolution"; resolution: Resolution }
@@ -111,8 +146,9 @@ export type ServerMsg =
   | { type: "error"; message: string };
 
 export type ClientMsg =
-  | { type: "join"; roomId: string; user: { name: string; color: string; model: ModelChoice } }
+  | { type: "join"; roomId: string; user: { id?: string; name: string; color: string; model: ModelChoice } }
   | { type: "presence"; state: PresenceState; file: string | null; cursor?: { line: number; ch: number } }
+  | { type: "draft"; text: string } // live prompt-in-progress for the shared intent view
   | { type: "set_model"; model: ModelChoice }
   | { type: "submit_prompt"; text: string; model: ModelChoice; file?: string }
   | { type: "resolve_conflict"; resolutionId: string; strategy: "sequence" | "keep_a" | "keep_b" }
@@ -194,6 +230,11 @@ export interface AgentEvent {
   iteration?: number;
   summary?: string; // final summary (phase=done)
   filesChanged?: string[]; // cumulative changed file paths (phase=done)
+  // who launched this run — stamped at broadcast so every teammate can see
+  // whose agent is touching what (shared activity context).
+  userId?: string;
+  userName?: string;
+  userColor?: string;
 }
 
 // Workspace-related server messages (sent over the same WS as ServerMsg)
