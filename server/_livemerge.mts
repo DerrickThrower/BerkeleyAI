@@ -1,0 +1,13 @@
+import { DEMO_FILES, reseed } from "./src/seed.js";
+import { execute } from "./src/adapters/index.js";
+import { mergeProposals } from "./src/merge.js";
+import { waitForRedis, redis } from "./src/redis.js";
+await waitForRedis();
+const before = DEMO_FILES["api.py"];
+const a = await execute({ prompt:"add input validation to create_user in api.py", file:"api.py", before, symbol:"create_user", model:"claude" }, "a");
+const b = await execute({ prompt:"add structured logging to delete_user in api.py", file:"api.py", before, symbol:"delete_user", model:"gpt" }, "b");
+console.log("A model:", a.model, "| B model:", b.model);
+const m = await mergeProposals("api.py", before, {prompt:"add input validation to create_user", user:"Maria", after:a.newContent}, {prompt:"add structured logging to delete_user", user:"Sam", after:b.newContent});
+console.log("merge via:", m.via, "conflict:", m.conflict);
+console.log("=== MERGED (live) ===\n" + m.merged);
+await redis.quit();

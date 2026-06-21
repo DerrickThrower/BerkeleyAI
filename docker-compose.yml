@@ -1,0 +1,20 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: vibedocs-redis
+    ports:
+      - "6380:6379"   # host 6380 (6379 may be taken by another project's redis)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: vibedocs-phoenix
+    ports:
+      - "6006:6006"   # UI + OTLP/HTTP collector (POST /v1/traces)
+      - "4317:4317"   # OTLP/gRPC collector
+    restart: unless-stopped
